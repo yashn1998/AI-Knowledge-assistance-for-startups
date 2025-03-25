@@ -1,0 +1,48 @@
+# Core dependencies
+fastapi
+uvicorn
+aiofiles
+nest-asyncio
+requests
+streamlit
+
+# Environment and configuration
+python-dotenv
+
+# Logging
+# logging  # Built-in, no need to install
+
+# LangChain and related dependencies
+langchain
+langchain-core
+langchain-community
+langchain-groq
+langchain-huggingface
+langgraph
+
+# Document processing
+PyPDF2  # Or replace with pypdf if preferred
+docx2txt
+unstructured
+
+# Embeddings and vector stores
+sentence-transformers
+pinecone-client
+huggingface-hub
+
+# Machine learning and NLP
+torch
+transformers
+numpy
+
+# Async and concurrency
+# asyncio  # Built-in, no need to install
+# concurrent.futures  # Built-in, no need to install
+
+# Typing and utilities
+typing-extensions
+datetime
+
+# Development and testing (optional, uncomment if needed)
+# pytest
+# httpx
