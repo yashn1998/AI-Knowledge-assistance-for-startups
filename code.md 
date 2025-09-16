@@ -13,6 +13,15 @@ Easy to extend: add or refine regex patterns or add new NOTETYPE handlers.
 
 Copy & run in your Jupyter notebook (or .py script). Adjust regexes or add more heuristics if you need extra precision.
 
+
+# This script preprocesses case notes by cleaning the NOTE column according to NOTETYPE rules. 
+# Common steps include removing URLs, emails, timestamps, JSON/log blocks, and disclaimers, 
+# while normalizing whitespace and collapsing bullets. Each NOTETYPE (e.g., Email In, RMA Status, 
+# Automation Log, Attachment Added) has specific preprocessing: stripping headers/signatures, 
+# summarizing troubleshooting steps, extracting orders/parts, replacing attachments, and 
+# summarizing logs. Final output adds NOTE_CLEAN plus structured columns like ATTACHMENTS, 
+# EXTRACTED_ORDERS, EXTRACTED_PARTS, and LOG_SUMMARY for cleaner, LLM-ready data.
+
 import re
 import pandas as pd
 from typing import Tuple, List, Dict
