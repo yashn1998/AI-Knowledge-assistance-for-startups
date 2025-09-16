@@ -1,0 +1,330 @@
+Nice — got it. Below is a self-contained, production-ready Python script that:
+
+Reads your df_case_notes DataFrame (assumes column names you showed: CASE_NUMBER, NOTETYPE, NOTE, TITLE, ...).
+
+Applies NOTETYPE-specific cleaning rules (based on the onboarding screenshots you shared).
+
+Produces NOTE_CLEAN plus a few helpful extracted columns (order numbers, part numbers, attachment placeholders, and a short log-summary).
+
+Is robust (pure-Python + pandas + re) so you don't need heavy NLP dependencies.
+
+Easy to extend: add or refine regex patterns or add new NOTETYPE handlers.
+
+
+Copy & run in your Jupyter notebook (or .py script). Adjust regexes or add more heuristics if you need extra precision.
+
+import re
+import pandas as pd
+from typing import Tuple, List, Dict
+
+# ---------------------------------------------------------------------
+# Helper regexes & small utilities
+# ---------------------------------------------------------------------
+URL_RE = re.compile(r'https?://\S+|www\.\S+', flags=re.IGNORECASE)
+EMAIL_RE = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')
+TIMESTAMP_RE = re.compile(
+    r'\b(?:\d{1,4}[-/]\d{1,2}[-/]\d{1,4}|\d{1,2}:\d{2}:\d{2}(?:\.\d+)?(?:\s?[APMapm]{2})?)\b'
+)
+FILE_RE = re.compile(r'[\w,\s-]{2,}\.(?:pdf|docx|doc|xlsx|xls|csv|txt|jpg|jpeg|png|zip)', flags=re.IGNORECASE)
+ORDER_RE = re.compile(r'\b(?:ORDER|ORD|RMA|PO)[-_]?\d{3,}\b', flags=re.IGNORECASE)
+PART_RE = re.compile(r'\b[A-Z0-9]{2,}-[A-Z0-9-]{2,}\b')
+SYSLOG_LINE_RE = re.compile(r'^\s*\[?\d{2,4}[-/]\d{1,2}[-/]\d{1,4}.*$', flags=re.MULTILINE)
+JSON_BLOCK_RE = re.compile(r'\{(?:.|\n)*?\}|\[(?:.|\n)*?\]', flags=re.MULTILINE)
+BOILERPLATE_ROUTING = re.compile(r'This is a Routing Decision Note.*', flags=re.IGNORECASE)
+BOILERPLATE_DISCLAIMER = re.compile(r'(This message.*confidential|Disclaimer:).*', flags=re.IGNORECASE)
+
+# normalize whitespace and punctuation
+def normalize_whitespace(text: str) -> str:
+    text = re.sub(r'\r\n?', '\n', text or '')
+    # remove multiple blank lines
+    text = re.sub(r'\n\s*\n+', '\n\n', text)
+    # collapse many spaces
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    # strip
+    return text.strip()
+
+def collapse_bullets(text: str) -> str:
+    # convert bullets to sentence-like structure
+    text = re.sub(r'[\n\r]+[\s]*[-•\*]+\s*', '. ', text)
+    # also convert multiple short lines to spaces
+    text = re.sub(r'[\n\r]+', ' ', text)
+    return re.sub(r'\s{2,}', ' ', text).strip()
+
+def remove_repeated_lines(text: str) -> str:
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip() != '']
+    seen = set()
+    out = []
+    for ln in lines:
+        if ln.lower() not in seen:
+            out.append(ln)
+            seen.add(ln.lower())
+    return '\n'.join(out)
+
+def count_log_levels(text: str) -> Dict[str,int]:
+    levels = {'ERROR':0, 'WARN':0, 'CRITICAL':0, 'INFO':0, 'EXCEPTION':0}
+    for level in levels.keys():
+        levels[level] = len(re.findall(r'\b' + re.escape(level) + r'\b', text, flags=re.IGNORECASE))
+    return levels
+
+# extract attachments filenames replaced by placeholder
+def replace_attachments(text: str) -> Tuple[str, List[str]]:
+    attachments = FILE_RE.findall(text)
+    new = FILE_RE.sub('<ATTACHMENT>', text)
+    return new, attachments
+
+# remove large JSON/XML blocks
+def strip_json_xml(text: str) -> str:
+    return JSON_BLOCK_RE.sub('<STRUCTURED_BLOCK>', text)
+
+# remove email headers and signatures heuristics
+def remove_email_headers_and_signatures(text: str) -> str:
+    # remove typical headers
+    text = re.sub(r'^(From|To|Cc|Subject|Sent|Date):.*$', '', text, flags=re.IGNORECASE | re.MULTILINE)
+    # remove signature starting markers
+    text = re.split(r'\n(--|Regards,|Best regards,|Thanks,|Sincerely,|Kind regards,)', text, maxsplit=1, flags=re.IGNORECASE)[0]
+    return text
+
+# generic common cleaning steps
+def clean_common(text: str) -> str:
+    if not isinstance(text, str):
+        return ''
+    t = text
+    t = URL_RE.sub('<URL>', t)
+    t = EMAIL_RE.sub('<EMAIL>', t)
+    t = TIMESTAMP_RE.sub('', t)
+    t = strip_json_xml(t)
+    t = BOILERPLATE_DISCLAIMER.sub('', t)
+    t = remove_repeated_lines(t)
+    t = normalize_whitespace(t)
+    return t
+
+# ---------------------------------------------------------------------
+# NOTETYPE-specific cleaning functions
+# ---------------------------------------------------------------------
+def clean_routing_decision(text: str) -> str:
+    t = clean_common(text)
+    t = BOILERPLATE_ROUTING.sub('', t)
+    # strip metadata fields like EPiC, BRETransactionId, Contract Number
+    t = re.sub(r'\b(EPIC|EPiC|Routing Source|Contract Number|BRETransactionId|Expression id)\b[:\s]*\S*', '', t, flags=re.IGNORECASE)
+    t = collapse_bullets(t)
+    return t
+
+def clean_attachment_added(text: str) -> str:
+    t = clean_common(text)
+    t, attachments = replace_attachments(t)
+    # remove timestamps & user info fragments
+    t = re.sub(r'uploaded by\s+\w+.*', '', t, flags=re.IGNORECASE)
+    t = normalize_whitespace(t)
+    return t
+
+def clean_email_in(text: str) -> str:
+    t = clean_common(text)
+    t = remove_email_headers_and_signatures(t)
+    # keep problem descriptions and action steps - heuristics
+    # pick sentences containing keywords 'issue|problem|error|fail|steps|troubleshoot|action'
+    sentences = re.split(r'(?<=[\.\?\!])\s+', t)
+    keep = [s for s in sentences if re.search(r'\b(issue|problem|error|fail|steps|troubleshoot|action|investigation)\b', s, flags=re.IGNORECASE)]
+    if not keep:
+        # fallback: keep first 2 sentences
+        keep = sentences[:2]
+    out = ' '.join(keep).strip()
+    return normalize_whitespace(out)
+
+def clean_kt_action_plan(text: str) -> str:
+    t = clean_common(text)
+    # remove filler words like 'pending' or vague terms alone
+    t = re.sub(r'\bpending\b', '', t, flags=re.IGNORECASE)
+    t = collapse_bullets(t)
+    return t
+
+def clean_current_status(text: str) -> str:
+    t = clean_common(text)
+    # remove or normalize dates (remove dates here)
+    t = re.sub(r'\b(?:\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}-\d{2}-\d{2})\b', '', t)
+    t = collapse_bullets(t)
+    return t
+
+def clean_customer_symptom(text: str) -> str:
+    t = clean_common(text)
+    # keep first paragraph or sentences containing 'error|issue|unable|not|fail'
+    paras = [p.strip() for p in t.split('\n') if p.strip()]
+    if not paras:
+        return t
+    # prefer paragraph with keywords
+    for p in paras:
+        if re.search(r'\b(error|issue|unable|not|fail|problem)\b', p, flags=re.IGNORECASE):
+            return normalize_whitespace(p)
+    return normalize_whitespace(paras[0])
+
+def clean_initial_customer_troubleshooting(text: str) -> str:
+    t = clean_common(text)
+    # keep summarized troubleshooting actions - collapse bullets
+    t = collapse_bullets(t)
+    # remove procedural generic statements
+    t = re.sub(r'\b(Please try|Try restarting|We recommend)\b.*?(?:\.|$)', '', t, flags=re.IGNORECASE)
+    return t
+
+def clean_rma_status(text: str) -> str:
+    t = clean_common(text)
+    # extract order numbers and part numbers
+    orders = ORDER_RE.findall(t)
+    parts = PART_RE.findall(t)
+    # remove verbose notification text
+    t = re.sub(r'(notification|ETA|Estimated).*', '', t, flags=re.IGNORECASE)
+    t = normalize_whitespace(t)
+    return t, orders, parts
+
+def clean_other(text: str) -> str:
+    t = clean_common(text)
+    # remove obvious log traces (traceback, stack trace)
+    t = re.sub(r'(?s)traceback.*', '<STACK_TRACE_REMOVED>', t, flags=re.IGNORECASE)
+    # remove repeated system messages
+    t = re.sub(r'(?:system message[:\s].*?\n)+', '', t, flags=re.IGNORECASE)
+    t = collapse_bullets(t)
+    return t
+
+def clean_collaboration_activity(text: str) -> str:
+    t = clean_common(text)
+    t = URL_RE.sub('', t)
+    # keep only collaboration reason / description briefly: return first sentence
+    s = re.split(r'(?<=[\.\?\!])\s+', t)
+    return s[0] if s else t
+
+def clean_automation_log(text: str) -> Tuple[str, Dict[str,int]]:
+    t = clean_common(text)
+    # remove raw JSON or large logs incrementally
+    t = JSON_BLOCK_RE.sub('', t)
+    # summarize alerts/errors
+    counts = count_log_levels(text)
+    # replace detailed syslog lines with a short placeholder
+    t = SYSLOG_LINE_RE.sub('<SYSLOG_LINE>', t)
+    # remove long repeated lines and condense
+    t = normalize_whitespace(t)
+    return t, counts
+
+def clean_resolution_summary(text: str) -> str:
+    t = clean_common(text)
+    # keep concise sentences: take first 2 sentences
+    sentences = re.split(r'(?<=[\.\?\!])\s+', t)
+    out = ' '.join(sentences[:2]).strip()
+    return out
+
+# mapping table for NOTETYPE -> function
+NOTETYPE_HANDLERS = {
+    'ROUTING DECISION': lambda txt: (clean_routing_decision(txt), {}),
+    'ATTACHMENT ADDED': lambda txt: (clean_attachment_added(txt), {}),
+    'EMAIL IN': lambda txt: (clean_email_in(txt), {}),
+    'KT ACTION PLAN': lambda txt: (clean_kt_action_plan(txt), {}),
+    'CURRENT STATUS': lambda txt: (clean_current_status(txt), {}),
+    'CUSTOMER SYMPTOM': lambda txt: (clean_customer_symptom(txt), {}),
+    'INITIAL CUSTOMER TROUBLESHOOTING': lambda txt: (clean_initial_customer_troubleshooting(txt), {}),
+    'RMA STATUS / ORDER CREATION': lambda txt: (clean_rma_status(txt)[0], {'orders': clean_rma_status(txt)[1], 'parts': clean_rma_status(txt)[2]}),
+    'OTHER': lambda txt: (clean_other(txt), {}),
+    'COLLABORATION ACTIVITY': lambda txt: (clean_collaboration_activity(txt), {}),
+    'AUTOMATION LOG': lambda txt: (clean_automation_log(txt)[0], {'log_counts': clean_automation_log(txt)[1]}),
+    'RESOLUTION SUMMARY': lambda txt: (clean_resolution_summary(txt), {}),
+}
+
+# Default handler: apply common cleaning + collapse bullets
+def default_handler(txt: str):
+    return (collapse_bullets(clean_common(txt)), {})
+
+# ---------------------------------------------------------------------
+# Master function to apply cleaning to dataframe
+# ---------------------------------------------------------------------
+def preprocess_case_notes(df: pd.DataFrame,
+                          note_col: str = 'NOTE',
+                          notetype_col: str = 'NOTETYPE') -> pd.DataFrame:
+    """
+    Input: DataFrame with at least NOTE and NOTETYPE columns.
+    Output: DataFrame with added NOTE_CLEAN, EXTRACTED_ORDERS, EXTRACTED_PARTS, ATTACHMENTS, LOG_SUMMARY
+    """
+    df = df.copy()
+    df['NOTE_CLEAN'] = ''
+    df['EXTRACTED_ORDERS'] = None
+    df['EXTRACTED_PARTS'] = None
+    df['ATTACHMENTS'] = None
+    df['LOG_SUMMARY'] = None
+
+    for i, row in df.iterrows():
+        raw = row.get(note_col, '') or ''
+        notetype = (row.get(notetype_col, '') or '').strip().upper()
+
+        # always remove emails, urls & long JSON blocks first
+        raw_common = clean_common(raw)
+
+        # detect attachments and replace them in every note
+        raw_common, attachments = replace_attachments(raw_common)
+
+        handler = NOTETYPE_HANDLERS.get(notetype, lambda t: default_handler(t))
+        cleaned, extras = handler(raw_common)
+
+        # for automation log if extras contains log_counts
+        if 'log_counts' in extras:
+            # prepare a small readable summary
+            counts = extras['log_counts']
+            summary = ', '.join([f'{k}:{v}' for k,v in counts.items() if v>0]) or 'no-log-levels-found'
+            df.at[i, 'LOG_SUMMARY'] = summary
+
+        # orders & parts handling might have come in extras
+        if 'orders' in extras and extras['orders']:
+            df.at[i, 'EXTRACTED_ORDERS'] = extras['orders']
+        if 'parts' in extras and extras['parts']:
+            df.at[i, 'EXTRACTED_PARTS'] = extras['parts']
+
+        # always save attachments found
+        df.at[i, 'ATTACHMENTS'] = attachments if attachments else []
+
+        # final normalization and length-control
+        cleaned = normalize_whitespace(cleaned)
+        # shorten extremely long notes (optional)
+        if len(cleaned) > 1500:
+            cleaned = cleaned[:1500].rsplit('.', 1)[0] + '...'
+
+        df.at[i, 'NOTE_CLEAN'] = cleaned
+
+    return df
+
+# ---------------------------------------------------------------------
+# Example usage
+# ---------------------------------------------------------------------
+if __name__ == "__main__":
+    # Example: you probably already have df_case_notes loaded. If not:
+    # df_case_notes = pd.read_csv('Data/CASE_NOTES_last_30_days.csv')
+    # For demo create a small DataFrame if running standalone:
+    sample = {
+        'CASE_NUMBER': [1,2],
+        'NOTETYPE': ['Email In', 'AUTOMATION LOG'],
+        'NOTE': [
+            "From: user@example.com\nSubject: Problem with device\nThe device shows error code 500. Steps tried: rebooted. Regards,\nJohn",
+            "2025-08-01 12:01:02 server1 process: ERROR: failed to connect\n{ \"error\": \"socket\" }\nWARN: slow response"
+        ]
+    }
+    df_demo = pd.DataFrame(sample)
+    out = preprocess_case_notes(df_demo)
+    print(out[['CASE_NUMBER','NOTETYPE','NOTE_CLEAN','EXTRACTED_ORDERS','ATTACHMENTS','LOG_SUMMARY']])
+    # Save cleaned version
+    # out.to_csv('CASE_NOTES_cleaned.csv', index=False)
+
+Notes & suggestions
+
+The script emphasises deterministic, regex-based cleaning so it's fast and stable for large datasets.
+
+If you want semantic summarization (e.g., convert a long automation log into a human-quality 2-line summary), plug in a small summarization model (transformers) or use an LLM — I can show that next if you want.
+
+If you want to extract structured fields more precisely (RMA numbers, part numbers, ETAs, addresses), we can add more targeted regexes or a small named-entity extraction (spaCy) pipeline.
+
+I intentionally put NOTE_CLEAN truncation at 1500 chars — tweak or remove as you like.
+
+If you'd like, I can convert this to a reusable module with unit tests and examples on your real dataset (you can paste a few representative note samples) and tune the regexes for your data.
+
+
+Want me to:
+
+1. Run this on a sample of your CSV and show the cleaned output? (paste a few rows here)
+
+
+2. Add extraction of ETA / shipping addresses / part number formats you expect?
+
+
+
