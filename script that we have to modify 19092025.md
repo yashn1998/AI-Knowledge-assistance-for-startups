@@ -334,3 +334,17 @@ if __name__ == "__main__":
     # print(log)
 
 
+
+keep above script  first as level 1 cleaning of data 
+
+
+below things we have to modify and do improvements in it and make it as level 2 clean 
+
+
+1. in this we want output in CSV file . 
+2. Currently this is removing any number from and remove  .so fix this as well . 
+3. use spacy advance model 
+and do lematizationn
+4. we have to remove stopwords also also give option to add custom stopwords . 
+5. 
+
