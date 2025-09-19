@@ -1,0 +1,92 @@
+import re
+from typing import List, Optional
+import pandas as pd
+
+def remove_custom_stopwords_from_df(
+    df: pd.DataFrame,
+    text_columns: List[str],
+    stopwords: List[str],
+    *,
+    preserve_original: bool = True,
+    clean_suffix: str = "_clean",
+    inplace: bool = False
+) -> pd.DataFrame:
+    """
+    Remove custom stopwords from specified text columns in a dataframe.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input dataframe.
+    text_columns : List[str]
+        List of column names in which to remove stopwords.
+    stopwords : List[str]
+        List of custom stopwords or phrases to remove. Matching is case-insensitive.
+    preserve_original : bool, optional
+        If True, original columns are kept and cleaned text is placed in new columns
+        with suffix `clean_suffix`. If False, original columns are overwritten.
+        Default True.
+    clean_suffix : str, optional
+        Suffix to append to column name when preserve_original is True. Default "_clean".
+    inplace : bool, optional
+        If True, modify the passed dataframe. If False, work on a copy and return it.
+        Default False.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with cleaned text columns.
+    """
+
+    if not inplace:
+        df = df.copy()
+
+    # Validate columns
+    missing = [c for c in text_columns if c not in df.columns]
+    if missing:
+        raise ValueError(f"The following columns are not in the dataframe: {missing}")
+
+    # Prepare stopwords pattern:
+    # - escape regex metacharacters
+    # - convert spaces inside phrases to \s+ so 'New   York' also matches 'New York'
+    # - sort by length desc to match longer phrases first
+    def _escape_phrase(p: str) -> str:
+        esc = re.escape(p.strip())
+        # replace escaped spaces with \s+ to match any whitespace
+        esc = re.sub(r"\\\s+", r"\\s+", esc)
+        return esc
+
+    normalized = [s for s in stopwords if isinstance(s, str) and s.strip() != ""]
+    if not normalized:
+        # nothing to remove; just return (or copy) dataframe
+        return df
+
+    escaped_phrases = sorted((_escape_phrase(s) for s in normalized), key=len, reverse=True)
+    pattern_text = r"\b(?:" + "|".join(escaped_phrases) + r")\b"
+    pattern = re.compile(pattern_text, flags=re.IGNORECASE | re.UNICODE)
+
+    # helper to clean one string, preserving NaN
+    def _clean_text_series(series: pd.Series) -> pd.Series:
+        mask_null = series.isna()
+        # ensure string type for operation
+        s = series.fillna("").astype(str)
+        # remove stopwords
+        s = s.apply(lambda txt: pattern.sub("", txt))
+        # collapse multiple spaces and trim
+        s = s.apply(lambda txt: re.sub(r"\s{2,}", " ", txt).strip())
+        # put back NaN where original was NaN
+        s.loc[mask_null] = pd.NA
+        return s
+
+    for col in text_columns:
+        cleaned = _clean_text_series(df[col])
+        if preserve_original:
+            new_col = col + clean_suffix
+            # avoid overwriting an existing column by accident
+            if new_col in df.columns:
+                raise ValueError(f"Target cleaned column '{new_col}' already exists. Pick another suffix.")
+            df[new_col] = cleaned
+        else:
+            df[col] = cleaned
+
+    return df
