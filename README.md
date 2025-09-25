@@ -1,3 +1,7 @@
+
+
+https://usijobs.deloitte.com/en_US/careersUSI/JobDetail?jobId=305681
+
 ### Overview of the RMA Issue Process
 The provided images depict a proposed "to-be" state for an RMA (Return Merchandise Authorization) issue process flow, likely from Cisco Systems (based on the copyright notice and references to internal tools like KIDB, SCOQ, and VMES). This process appears designed to handle hardware or service-related failures in a structured, efficient manner, incorporating automation through AI "agents" to triage, classify, and resolve issues. The flowchart outlines the end-to-end workflow, starting from issue detection and moving through analysis, escalation, and resolution. The second image details three specific agents that automate key parts of this flow, leveraging data like logs, error codes, and historical records to reduce manual effort.
 
