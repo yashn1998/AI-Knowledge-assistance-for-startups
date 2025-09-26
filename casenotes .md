@@ -356,3 +356,66 @@ Add a summary log (counts of masked emails/phones/etc.),
 Or tune header-removal to your exact screenshot patterns (I can extract stricter header keywords if you paste a few raw examples).
 
 
+
+
+def _remove_email_headers(self, text: str) -> str:
+    """
+    Heuristic: remove contiguous header-like lines at the top.
+    Also remove any lines that start with known header keys anywhere.
+
+    Changed: if the top header contains a Subject: line, keep that Subject
+    and treat it as the beginning of body text (do not drop it).
+    """
+    lines = text.splitlines()
+    cleaned_lines = []
+    header_mode = True
+
+    for line in lines:
+        stripped = line.strip()
+
+        if header_mode:
+            # blank line likely ends header block
+            if stripped == "":
+                header_mode = False
+                continue
+
+            # If it's a Subject: line — preserve it and exit header mode.
+            # (case-insensitive, allow spaces before colon)
+            if re.match(r"(?i)^\s*subject\s*:", stripped):
+                header_mode = False
+                cleaned_lines.append(line)
+                continue
+
+            # Skip common header keys (but avoid matching Subject here).
+            # self._header_keys may contain regexes; exclude those mentioning "subject".
+            starts_header = any(
+                (re.match(k, stripped, flags=re.IGNORECASE) is not None)
+                for k in (hk for hk in self._header_keys if 'subject' not in hk.lower())
+            )
+
+            # skip explicit From/To/Cc/Bcc lines (common email header lines)
+            if starts_header or re.search(r"(?i)\b(from|to|cc|bcc)\s*:", stripped):
+                continue
+
+            # skip lines that look like ORDER/ROUTING/etc.
+            if re.match(r"(?i)^(ORDER|ROUTING|COLLABORATION|ATTACHMENT|AUTOMATION|CURRENT STATUS|RESOLUTION)\b", stripped):
+                continue
+
+            # drop lines that contain email addresses (common header lines),
+            # but only when line is reasonably short (to avoid dropping full paragraphs)
+            if len(re.findall(self._compiled['EMAIL'], stripped)) >= 1 and len(stripped) < 400:
+                continue
+
+            # skip short "Key: value" style header-ish lines (but Subject already handled)
+            if ":" in stripped and len(stripped) < 200 and re.match(r"^[A-Za-z0-9\s\-\(\)]+:", stripped):
+                continue
+
+            # once we see something that doesn't look like a header, stop header_mode
+            header_mode = False
+            cleaned_lines.append(line)
+
+        else:
+            cleaned_lines.append(line)
+
+    return "\n".join(cleaned_lines)
+
